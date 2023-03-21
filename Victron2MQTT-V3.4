@@ -1,0 +1,400 @@
+/*
+  PID  0xA043      -- Product ID for BlueSolar MPPT 100/15
+  FW  119     -- Firmware version of controller, v1.19
+  SER#  HQXXXXXXXXX   -- Serial number
+  V 13790     -- Battery voltage, mV
+  I -10     -- Battery current, mA
+  VPV 15950     -- Panel voltage, mV
+  PPV 0     -- Panel power, W
+  CS  5     -- Charge state, 0 to 9
+  ERR 0     -- Error code, 0 to 119
+  LOAD  ON      -- Load output state, ON/OFF
+  IL  0     -- Load current, mA
+  H19 0       -- Yield total, kWh
+  H20 0     -- Yield today, kWh
+  H21 397     -- Maximum power today, W
+  H22 0       -- Yield yesterday, kWh
+  H23 0     -- Maximum power yesterday, W
+  HSDS  0     -- Day sequence number, 0 to 365
+  Checksum  l:A0002000148   -- Message checksum
+*/
+#include "config.h"
+#include <WiFiUdp.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266mDNS.h>
+#include <ArduinoOTA.h>
+#include <PubSubClient.h>
+#include <SoftwareSerial.h>
+
+unsigned long previousMillis1 = 0; // speichert den Zeitpunkt des letzten Publish
+unsigned long previousMillis2 = 0;
+unsigned long previousMillis3 = 0;
+unsigned long previousMillis4 = 0;
+unsigned long previousMillis5 = 0;
+unsigned long previousMillis6 = 0;
+unsigned long previousMillis7 = 0;
+unsigned long previousMillis8 = 0;
+unsigned long previousMillis9 = 0;
+unsigned long previousMillis10 = 0;
+unsigned long previousMillis11 = 0;
+unsigned long previousMillis12 = 0;
+unsigned long previousMillis13 = 0;
+unsigned long previousMillis14 = 0;
+const long interval = 10000; // die minimale Verzögerung zwischen Publishes in Millisekunden
+
+
+
+//SoftwareSerial Vser(13, 15); // RX | TX on nodemcu
+SoftwareSerial Vser(5, 4); // RX | TX
+
+// ----- RF -----
+ #include <RCSwitch.h>
+ RCSwitch mySwitch = RCSwitch();
+// ----- RF ende -----
+
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+
+//String value;
+String label, val;
+char mptt_location[16];
+float floatValue;
+char buf[45];
+char char_current[6];
+char panel_power[6];
+char laadstatus[12];
+char prod_yesterday[6];
+char max_power_h[6];
+char prod_today[6];
+byte len = 12;
+int intValue;
+
+
+
+void setup() {
+  Serial.begin(115200);
+
+  Vser.begin(19200);
+
+  // Wait for hardware to initialize
+  delay(1000);
+  Serial.println("Booting");
+  WiFi.mode(WIFI_STA);
+  WiFi.hostname(OTA_HOSTNAME);
+  WiFi.begin(ssid, password);
+  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
+    Serial.println("Connection Failed! Rebooting...");
+    delay(5000);
+    ESP.restart();
+  }
+  
+  // ----- RF -----
+  //mySwitch.enableReceive(2);  // Receiver on interrupt 0 => that is pin #2
+  mySwitch.enableReceive(digitalPinToInterrupt(D4));
+  // ----- RF ende -----
+
+  // Port defaults to 8266
+  // ArduinoOTA.setPort(8266);
+  // Hostname defaults to esp8266-[ChipID]
+  ArduinoOTA.setHostname(OTA_HOSTNAME);
+
+  // No authentication by default
+  ArduinoOTA.setPassword((const char *)"123");
+
+  ArduinoOTA.onStart([]() {
+    Serial.println("Start");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    //   Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+  });
+  ArduinoOTA.begin();
+  client.setServer(mqtt_server, 1883);
+  client.publish("Victron2/Live", "0");
+
+
+}
+
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (client.connect("Victron2", mqtt_user, mqtt_pass)) {
+      Serial.println("connected");
+      client.publish("Victron2/Live", "1");
+      // Once connected, publish an announcement...
+    } else {
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
+
+void rfAbrufen()  {
+  //Serial.println("RF Loop");
+  if (mySwitch.available()) {
+    unsigned long value = mySwitch.getReceivedValue();
+    if (value != 0) {
+      char buf[10];
+      snprintf(buf, sizeof(buf), "0x%lx", value);
+      client.publish("Victron2/RF", buf);
+      mySwitch.resetAvailable();
+    }
+  }
+}
+
+
+void loop() {
+  ArduinoOTA.handle();
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+
+  rfAbrufen();
+
+
+  
+  if (Vser.available())
+  {
+    label = Vser.readStringUntil('\t');                // this is the actual line that reads the label from the MPPT controller
+    val = Vser.readStringUntil('\r\r\n');              // this is the line that reads the value of the label
+    char charBufL[label.length() + 1];
+    label.toCharArray(charBufL, label.length() + 1);
+
+    if (label == "I")
+    { // In this case I chose to read charging current
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis1 >= interval) {
+        previousMillis1 = currentMillis;
+        val.toCharArray(buf, sizeof(buf));
+        float floatValue = atof(buf);
+        floatValue = floatValue / 1000;
+        dtostrf(floatValue, len, 2, char_current);
+        client.publish("Victron2/Battery current, I", char_current);
+      }
+    }
+
+    else if (label == "V")
+    {
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis2 >= interval) {
+        previousMillis2 = currentMillis;
+        val.toCharArray(buf, sizeof(buf));
+        float floatValue = atof(buf);
+        floatValue = floatValue / 1000;
+        dtostrf(floatValue, len, 2, char_current);
+        if (floatValue > 9) {
+        client.publish("Victron2/Battery voltage, V", char_current);
+        }
+      }
+    }
+
+    else if (label == "PPV")
+    {
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis3 >= interval) {
+        previousMillis3 = currentMillis;
+        val.toCharArray(buf, sizeof(buf));
+        floatValue = atof(buf);
+        dtostrf(floatValue, len, 0, panel_power);
+        panel_power[len] = ' '; panel_power[len + 1] = 0;
+        client.publish("Victron2/Panel power, W", panel_power);
+      }
+    }
+
+    else if (label == "VPV") //Solar
+    {
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis4 >= interval) {
+        previousMillis4 = currentMillis;
+        val.toCharArray(buf, sizeof(buf));
+        float floatValue = atof(buf);
+        floatValue = floatValue / 1000;
+        dtostrf(floatValue, len, 2, char_current);
+        client.publish("Victron2/Panel voltage", char_current);
+      }
+    }
+
+    else if (label == "H20")
+    {
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis5 >= interval) {
+        previousMillis5 = currentMillis;
+        val.toCharArray(buf, sizeof(buf));
+        float floatValue = atof(buf);
+        floatValue = floatValue / 100;
+        dtostrf(floatValue, len, 2, prod_today);
+        prod_today[len] = ' '; prod_today[len + 1] = 0;
+        client.publish("Victron2/Yield today, kWh", prod_today);
+      }
+    }
+
+    else if (label == "H22")                                                                      //Yield yesterday, kWh
+    {
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis6 >= interval) {
+        previousMillis6 = currentMillis;
+        val.toCharArray(buf, sizeof(buf));
+        float floatValue = atof(buf);
+        floatValue = floatValue / 100;
+        dtostrf(floatValue, len, 2, prod_yesterday);
+        prod_yesterday[len] = ' '; prod_yesterday[len + 1] = 0;
+        client.publish("Victron2/Yield yesterday, kWh", prod_yesterday);
+      }
+    }
+
+    else if (label == "H19")                                                                        //-- Yield total, kWh
+    {
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis7 >= interval) {
+        previousMillis7 = currentMillis;
+        val.toCharArray(buf, sizeof(buf));
+        float floatValue = atof(buf);
+        floatValue = floatValue / 100;
+        dtostrf(floatValue, len, 2, prod_yesterday);
+        prod_yesterday[len] = ' '; prod_yesterday[len + 1] = 0;
+        client.publish("Victron2/Yield total, kWh", prod_yesterday);
+      }
+    }
+
+    else if (label == "H21")                                                                        //Maximum power today, W
+    {
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis8 >= interval) {
+        previousMillis8 = currentMillis;
+        val.toCharArray(buf, sizeof(buf));
+        floatValue = atof(buf);
+        dtostrf(floatValue, len, 0, max_power_h);
+        max_power_h[len] = ' '; max_power_h[len + 1] = 0;
+        client.publish("Victron2/Maximum power today, W", max_power_h);
+      }
+    }
+
+    else if (label == "H23")                                                                          //Maximum power yesterday, W
+    {
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis9 >= interval) {
+        previousMillis9 = currentMillis;
+        val.toCharArray(buf, sizeof(buf));
+        floatValue = atof(buf);
+        dtostrf(floatValue, len, 0, max_power_h);
+        max_power_h[len] = ' '; max_power_h[len + 1] = 0;
+        client.publish("Victron2/Maximum power yesterday, W", max_power_h);
+      }
+    }
+
+    else if (label == "FW")                                                                           //FW 119     -- Firmware version of controller, v1.19
+    {
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis10 >= interval) {
+        previousMillis10 = currentMillis;
+        val.toCharArray(buf, sizeof(buf));
+        float floatValue = atof(buf);
+        floatValue = floatValue / 100;
+        dtostrf(floatValue, len, 2, prod_today);
+        prod_today[len] = ' '; prod_today[len + 1] = 0;
+        client.publish("Victron2/Firmware version", prod_today);
+      }
+    }
+    else if (label == "HSDS")                                                                         //Day sequence number (0..364)
+    {
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis11 >= interval) {
+        previousMillis11 = currentMillis;
+        val.toCharArray(buf, sizeof(buf));
+        floatValue = atof(buf);
+        dtostrf(floatValue, len, 0, panel_power);
+        panel_power[len] = ' '; panel_power[len + 1] = 0;
+        client.publish("Victron2/Day sequence number", panel_power);
+      }
+    }
+    else if (label == "MPPT")
+    {
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis12 >= interval) {
+        previousMillis12 = currentMillis;
+        val.toCharArray(buf, sizeof(buf));
+        intValue = atof(buf);
+        switch (intValue) {
+          case 0 : client.publish("Victron2/Tracker operation", "Off"); break;
+          case 1 : client.publish("Victron2/Tracker operation", "Limited"); break;
+          case 2 : client.publish("Victron2/Tracker operation", "Active"); break;
+          default:
+            client.publish("Victron2/Tracker operation", "Tracker operation not detected  !! ");
+        }
+      }
+
+    }
+    else if (label == "ERR")                               // This routine reads the error code.
+    {
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis13 >= interval) {
+        previousMillis13 = currentMillis;
+      val.toCharArray(buf, sizeof(buf));
+      intValue = atoi(buf);
+      switch (intValue) {
+        case 0: client.publish("Victron2/Error code", "No error"); break;
+        case 2: client.publish("Victron2/Error code", "Battery voltage too high"); break;
+        case 17: client.publish("Victron2/Error code", "Charger temperature too high"); break;
+        case 18: client.publish("Victron2/Error code", "Charger over current"); break;
+        case 19: client.publish("Victron2/Error code", "Charger current reversed"); break;
+        case 20: client.publish("Victron2/Error code", "Bulk time limit exceeded"); break;
+        case 21: client.publish("Victron2/Error code", "Current sensor issue"); break;
+        case 26: client.publish("Victron2/Error code", "Terminals overheated"); break;
+        case 28: client.publish("Victron2/Error code", "Converter issue"); break;
+        case 33: client.publish("Victron2/Error code", "Input voltage too high (solar panel)"); break;
+        case 34: client.publish("Victron2/Error code", "Input current too high (solar panel)"); break;
+        case 38: client.publish("Victron2/Error code", "Input shutdown (excessive battery voltage)"); break;
+        case 39: client.publish("Victron2/Error code", "Input shutdown (due to current flow during off mode)"); break;
+        case 65: client.publish("Victron2/Error code", "Lost communication with one of devices"); break;
+        case 66: client.publish("Victron2/Error code", "Synchronised charging device configuration issue"); break;
+        case 67: client.publish("Victron2/Error code", "BMS connection lost"); break;
+        case 68: client.publish("Victron2/Error code", "Network misconfigured"); break;
+        case 116: client.publish("Victron2/Error code", "Factory calibration data lost"); break;
+        case 117: client.publish("Victron2/Error code", "Invalid/incompatible firmware"); break;
+        case 119: client.publish("Victron2/Error code", "User settings invalid"); break;
+        default:
+          client.publish("Victron2/Error code", "ERROR CODE not detected  !! ");
+      }
+      }
+    }
+    else if (label == "CS")                                  //  Charge Status
+    {
+      unsigned long currentMillis = millis();
+      if (currentMillis - previousMillis14 >= interval) {
+        previousMillis14 = currentMillis;
+      val.toCharArray(buf, sizeof(buf));
+      intValue = atoi(buf);
+      switch (intValue) {
+        case 0 : client.publish("Victron2/Charge state", "Off"); break;
+        case 2 : client.publish("Victron2/Charge state", "Fault"); break;
+        case 3 : client.publish("Victron2/Charge state", "Bulk"); break;
+        case 4 : client.publish("Victron2/Charge state", "Absorption"); break;
+        case 5 : client.publish("Victron2/Charge state", "Float"); break;
+        case 7 : client.publish("Victron2/Charge state", "Equalize (manual)"); break;
+        case 245 : client.publish("Victron2/Charge state", "Starting-up"); break;
+        case 247 : client.publish("Victron2/Charge state", "Auto equalize / Recondition"); break;
+        case 252 : client.publish("Victron2/Charge state", "External control"); break;
+        default:
+          client.publish("Victron2/Charge state", "Charge state not detected  !! ");
+      }
+      }
+    }
+  }
+}
